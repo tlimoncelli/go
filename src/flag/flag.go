@@ -49,12 +49,37 @@
 	Flag parsing stops just before the first non-flag argument
 	("-" is a non-flag argument) or after the terminator "--".
 
+	If not defined otherwise, "-h" and "-help" print the usage message.
+
+	If not defined otherwise, "-flagfile" takes one argument
+	which is a filename. The file is read and processed as a
+	list of flags, processed as if they appeared next on the
+	command line. The file format is one flag per line. If
+	the flag takes a value, the line must include a "="
+	("foo=bar", not "foo bar"). Blank lines and lines starting
+	with "#" are skipped. Lines may not start with a hyphen.
+	Values are not quoted; the value continues to the end of
+	the line; spaces are not trimmed. The file may include
+	flagfile files, but this is not recommended.
+	For example:
+		i=1
+		# this is a comment
+		s=foo
+		long=this is a very long string
+		special= this string starts with a space
+
+	DefaultsFromFiles(filename) designates flagfile(s) that is
+	read before any command line flags are parsed, as if
+	--flagfile=filename was on the command line ahead of any
+	other flags. This can be used to set defaults. Multiple
+	filenames can be specified, and will be read in order.
+
 	Integer flags accept 1234, 0664, 0x1234 and may be negative.
 	Boolean flags may be:
 		1, 0, t, f, T, F, true, false, TRUE, FALSE, True, False
 	Duration flags accept any input valid for time.ParseDuration.
 
-	The default set of command-line flags is controlled by
+	The default command-line flags are controlled by
 	top-level functions.  The FlagSet type allows one to define
 	independent sets of flags, such as to implement subcommands
 	in a command-line interface. The methods of FlagSet are
@@ -64,6 +89,7 @@
 package flag
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -276,6 +302,7 @@ type FlagSet struct {
 	args          []string // arguments after flags
 	errorHandling ErrorHandling
 	output        io.Writer // nil means stderr; use out() accessor
+	firstfiles    []string  // files of flags to read before parsing command line
 }
 
 // A Flag represents the state of a flag.
@@ -855,6 +882,21 @@ func (f *FlagSet) parseOne() (bool, error) {
 			f.usage()
 			return false, ErrHelp
 		}
+		if name == "flagfile" {
+			// It must have a filename, which might be the next argument.
+			if !hasValue {
+				if len(f.args) < 1 {
+					return false, ErrHelp
+				}
+				value, f.args = f.args[0], f.args[1:]
+			}
+			addargs, err := f.parseFlagFiles(value)
+			if err != nil {
+				return false, err
+			}
+			f.args = append(addargs, f.args...) // new flags are processed next
+			return true, nil
+		}
 		return false, f.failf("flag provided but not defined: -%s", name)
 	}
 
@@ -889,13 +931,74 @@ func (f *FlagSet) parseOne() (bool, error) {
 	return true, nil
 }
 
+// parseFlagFiles parses one or more flagfiles. The format is one
+// flag per line, no "-" at the start of the line, if the flag takes
+// a value, the line must include a "=" ("foo=bar", not "foo bar").
+// Blank lines and lines starting with "#" are skipped.
+func (f *FlagSet) parseFlagFiles(filelist ...string) ([]string, error) {
+	var args []string
+	for _, fn := range filelist {
+		file, err := os.Open(fn)
+		if err != nil {
+			switch f.errorHandling {
+			case ContinueOnError:
+				return []string{}, err
+			case ExitOnError:
+				os.Exit(2)
+			case PanicOnError:
+				panic(err)
+			}
+		}
+		defer file.Close()
+
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			t := scanner.Text()
+			if len(t) == 0 || t[0] == '#' {
+				continue // skip blank lines and comments
+			}
+			args = append(args, "-"+scanner.Text())
+		}
+
+		if err := scanner.Err(); err != nil {
+			if err != nil {
+				switch f.errorHandling {
+				case ContinueOnError:
+					return []string{}, err
+				case ExitOnError:
+					os.Exit(2)
+				case PanicOnError:
+					panic(err)
+				}
+			}
+		}
+
+	}
+	return args, nil
+}
+
 // Parse parses flag definitions from the argument list, which should not
 // include the command name. Must be called after all flags in the FlagSet
 // are defined and before flags are accessed by the program.
 // The return value will be ErrHelp if -help or -h were set but not defined.
+// If -flagfile is not set, this flag will be replaced by the flags found
+// in the named file.
 func (f *FlagSet) Parse(arguments []string) error {
 	f.parsed = true
-	f.args = arguments
+
+	fileargs, err := f.parseFlagFiles(f.args...)
+	if err != nil {
+		switch f.errorHandling {
+		case ContinueOnError:
+			return err
+		case ExitOnError:
+			os.Exit(2)
+		case PanicOnError:
+			panic(err)
+		}
+	}
+
+	f.args = append(fileargs, arguments...)
 	for {
 		seen, err := f.parseOne()
 		if seen {
@@ -954,4 +1057,18 @@ func NewFlagSet(name string, errorHandling ErrorHandling) *FlagSet {
 func (f *FlagSet) Init(name string, errorHandling ErrorHandling) {
 	f.name = name
 	f.errorHandling = errorHandling
+}
+
+// DefaultsFromFiles accumulates flagfiles to be read prior to parsing
+// the command line. It may be called multiple times to add more
+// files.
+func (f *FlagSet) DefaultsFromFiles(files ...string) {
+	f.firstfiles = append(f.firstfiles, files...)
+}
+
+// DefaultsFromFiles accumulates flagfiles to be read prior to parsing
+// the command line. It may be called multiple times to add more
+// files.
+func DefaultsFromFiles(files ...string) {
+	CommandLine.DefaultsFromFiles(files...)
 }
