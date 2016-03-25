@@ -70,7 +70,7 @@
 
 	DefaultsFromFiles(filename) designates flagfile(s) that is
 	read before any command line flags are parsed, as if
-	--flagfile=filename was on the command line ahead of any
+	-flagfile=filename was on the command line ahead of any
 	other flags. This can be used to set defaults. Multiple
 	filenames can be specified, and will be read in order.
 
