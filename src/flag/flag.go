@@ -302,7 +302,7 @@ type FlagSet struct {
 	args          []string // arguments after flags
 	errorHandling ErrorHandling
 	output        io.Writer // nil means stderr; use out() accessor
-	firstfiles    []string  // files of flags to read before parsing command line
+	firstfiles    []string  // flagfiles to read before parsing command line
 }
 
 // A Flag represents the state of a flag.
